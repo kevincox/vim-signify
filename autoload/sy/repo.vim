@@ -39,11 +39,50 @@ function! s:callback_vim_close(channel) dict abort
   return s:handle_diff(self, exitval)
 endfunction
 
+" Function: s:write_buffer {{{1
+" Stolen from https://github.com/airblade/vim-gitgutter
+function! s:write_buffer(file)
+  let bufnr = bufnr('')
+  let bufcontents = getbufline(bufnr, 1, '$')
+
+  if bufcontents == [''] && line2byte(1) == -1
+    " Special case: completely empty buffer.
+    " A nearly empty buffer of only a newline has line2byte(1) == 1.
+    call writefile([], a:file)
+    return
+  endif
+
+  if getbufvar(bufnr, '&fileformat') ==# 'dos'
+    call map(bufcontents, 'v:val."\r"')
+  endif
+
+  let fenc = getbufvar(bufnr, '&fileencoding')
+  if fenc !=# &encoding
+    call map(bufcontents, 'iconv(v:val, &encoding, "'.fenc.'")')
+  endif
+
+  if getbufvar(bufnr, '&bomb')
+    let bufcontents[0]='﻿'.bufcontents[0]
+  endif
+
+  call writefile(bufcontents, a:file)
+endfunction
+
 " Function: sy#get_diff {{{1
 function! sy#repo#get_diff(vcs, func) abort
   call sy#verbose('sy#repo#get_diff()', a:vcs)
+
   let job_id = get(b:, 'sy_job_id_'.a:vcs)
-  let [cmd, options] = s:initialize_job(a:vcs)
+
+  if has_key(g:signify_vcs_cmds_diffmode, a:vcs)
+    let tempfile = tempname()
+    call s:write_buffer(tempfile)
+    let [cmd, options] = s:initialize_buffer_job(a:vcs, tempfile)
+    let options.tempfile = tempfile
+  else
+    let [cmd, options] = s:initialize_job(a:vcs)
+  endif
+
   let options.func = a:func
 
   " Neovim
@@ -105,6 +144,10 @@ endfunction
 function! s:handle_diff(options, exitval) abort
   call sy#verbose('s:handle_diff()', a:options.vcs)
 
+  if has_key(a:options, 'tempfile')
+    call delete(a:options.tempfile)
+  endif
+
   let sy = getbufvar(a:options.bufnr, 'sy')
   if empty(sy)
     call sy#verbose(printf('No b:sy found for %s', bufname(a:options.bufnr)), a:options.vcs)
@@ -120,7 +163,7 @@ function! s:handle_diff(options, exitval) abort
     call map(a:options.stdoutbuf, 'iconv(v:val, &fenc, &enc)')
   endif
 
-  let [found_diff, diff] = s:check_diff_{a:options.vcs}(a:exitval, a:options.stdoutbuf)
+  let [found_diff, diff] = s:check_diff(a:exitval, a:options.stdoutbuf)
   if found_diff
     if index(sy.vcs, a:options.vcs) == -1
       let sy.vcs += [a:options.vcs]
@@ -131,6 +174,11 @@ function! s:handle_diff(options, exitval) abort
   endif
 
   call setbufvar(a:options.bufnr, 'sy_job_id_'.a:options.vcs, 0)
+endfunction
+
+" Function: s:check_diff {{{1
+function! s:check_diff(exitval, diff) abort
+  return a:exitval == 1 ? [1, a:diff] : [0, []]
 endfunction
 
 " Function: s:check_diff_git {{{1
@@ -362,20 +410,32 @@ endfunction
 " Function: s:initialize_job {{{1
 function! s:initialize_job(vcs) abort
   let vcs_cmd = s:expand_cmd(a:vcs, g:signify_vcs_cmds)
+  return s:wrap_cmd(a:vcs, vcs_cmd)
+endfunction
+
+" Function: s:initialize_buffer_job {{{1
+function! s:initialize_buffer_job(vcs, live) abort
+  let base_cmd = s:get_base_cmd(a:vcs)
+  let diff_cmd = 'set -o pipefail; ' . base_cmd . ' | ' . s:difftool . ' -U0 - ' . fnameescape(a:live)
+  return s:wrap_cmd(a:vcs, diff_cmd)
+endfunction
+
+" Function: s:initialize_buffer_job {{{1
+function! s:wrap_cmd(vcs, cmd) abort
   if has('win32')
     if has('nvim')
-      let cmd = &shell =~ '\v%(cmd|powershell)' ? vcs_cmd : ['sh', '-c', vcs_cmd]
+      let cmd = &shell =~ '\v%(cmd|powershell)' ? a:cmd : ['sh', '-c', a:cmd]
     else
       if &shell =~ 'cmd'
-        let cmd = join([&shell, &shellcmdflag, '(', vcs_cmd, ')'])
+        let cmd = join([&shell, &shellcmdflag, '(', a:cmd, ')'])
       elseif empty(&shellxquote)
-        let cmd = join([&shell, &shellcmdflag, &shellquote, vcs_cmd, &shellquote])
+        let cmd = join([&shell, &shellcmdflag, &shellquote, a:cmd, &shellquote])
       else
-        let cmd = join([&shell, &shellcmdflag, &shellxquote, vcs_cmd, &shellxquote])
+        let cmd = join([&shell, &shellcmdflag, &shellxquote, a:cmd, &shellxquote])
       endif
     endif
   else
-    let cmd = ['sh', '-c', vcs_cmd]
+    let cmd = ['sh', '-c', a:cmd]
   endif
   let options = {
         \ 'stdoutbuf':   [''],
