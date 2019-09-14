@@ -69,7 +69,9 @@ function! s:write_buffer(file)
 endfunction
 
 " Function: sy#get_diff {{{1
-function! sy#repo#get_diff(vcs, func) abort
+function! sy#repo#get_diff(vcs, func, ...) abort
+  let diff_options = get(a:, 1, {})
+
   call sy#verbose('sy#repo#get_diff()', a:vcs)
 
   let job_id = get(b:, 'sy_job_id_'.a:vcs)
@@ -77,7 +79,7 @@ function! sy#repo#get_diff(vcs, func) abort
   if has_key(g:signify_vcs_cmds_diffmode, a:vcs)
     let tempfile = tempname()
     call s:write_buffer(tempfile)
-    let [cmd, options] = s:initialize_buffer_job(a:vcs, tempfile)
+    let [cmd, options] = s:initialize_buffer_job(a:vcs, tempfile, diff_options)
     let options.tempfile = tempfile
   else
     let [cmd, options] = s:initialize_job(a:vcs)
@@ -344,7 +346,7 @@ endfunction
 " Function: #preview_hunk {{{1
 function! sy#repo#preview_hunk() abort
   if exists('b:sy') && !empty(b:sy.updated_by)
-    call sy#repo#get_diff(b:sy.updated_by, function('s:preview_hunk'))
+    call sy#repo#get_diff(b:sy.updated_by, function('s:preview_hunk'), {'context': 3})
   endif
 endfunction
 
@@ -414,9 +416,13 @@ function! s:initialize_job(vcs) abort
 endfunction
 
 " Function: s:initialize_buffer_job {{{1
-function! s:initialize_buffer_job(vcs, live) abort
+function! s:initialize_buffer_job(vcs, live, options) abort
+  let context = get(a:options, 'context', 0)
+
   let base_cmd = s:get_base_cmd(a:vcs)
-  let diff_cmd = 'set -o pipefail; ' . base_cmd . ' | ' . s:difftool . ' -U0 - ' . fnameescape(a:live)
+  let diff_cmd = 'set -o pipefail; ' .
+    \ base_cmd . ' | ' .
+    \ s:difftool . ' -U' . context . ' - ' . fnameescape(a:live)
   return s:wrap_cmd(a:vcs, diff_cmd)
 endfunction
 
